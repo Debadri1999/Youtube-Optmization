@@ -16,6 +16,19 @@ except Exception:
     build = None
     HttpError = Exception
 
+from dashboard.components.visualizations import (
+    kpi_row,
+    plotly_bar_chart,
+    plotly_gauge_chart,
+    plotly_heatmap,
+    plotly_line_chart,
+    plotly_radar_chart,
+    plotly_scatter,
+    plotly_treemap,
+    section_header,
+    styled_dataframe,
+    styled_keyword_chips,
+)
 from src.llm_integration.thumbnail_generator import ThumbnailGenerator
 
 
@@ -574,7 +587,47 @@ def _gemini_generate_text(gemini_key: str, model: str, prompt: str) -> str:
     return "\n\n".join(texts)
 
 
+def _openai_generate_text(openai_key: str, model: str, prompt: str) -> str:
+    """Call OpenAI chat completions to generate strategy text."""
+    endpoint = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {openai_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an advanced YouTube strategist supporting the "
+                    "Purdue × Google Creator Insights project. "
+                    "Keep outputs concise, structured, and actionable."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.7,
+    }
+    response = requests.post(endpoint, headers=headers, json=payload, timeout=90)
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"OpenAI text API error ({response.status_code}): {response.text[:500]}"
+        )
+    body = response.json()
+    choices = body.get("choices", [])
+    if not choices:
+        raise RuntimeError("OpenAI did not return any choices.")
+    message = choices[0].get("message", {}) or {}
+    content = message.get("content") or ""
+    if not content:
+        raise RuntimeError("OpenAI returned an empty message content.")
+    return content
+
+
 def _render_overview(channel_df: pd.DataFrame) -> None:
+    section_header("Channel Overview", icon="📈")
+
     total_videos = len(channel_df)
     total_views = int(channel_df["views"].fillna(0).sum())
     total_likes = int(channel_df["likes"].fillna(0).sum())
@@ -582,43 +635,80 @@ def _render_overview(channel_df: pd.DataFrame) -> None:
     avg_views = int(channel_df["views"].fillna(0).mean())
     med_eng = channel_df["engagement_rate"].median() * 100
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Videos (1Y)", f"{total_videos:,}")
-    c2.metric("Total Views", f"{total_views:,}")
-    c3.metric("Total Likes", f"{total_likes:,}")
-    c4.metric("Total Comments", f"{total_comments:,}")
-    c5.metric("Avg Views/Video", f"{avg_views:,}")
-    c6.metric("Median Engagement", f"{med_eng:.2f}%")
+    kpi_row(
+        [
+            {"label": "Videos (1Y)", "value": f"{total_videos:,}", "icon": "🎬"},
+            {"label": "Total Views", "value": f"{total_views:,}", "icon": "👁️"},
+            {"label": "Total Likes", "value": f"{total_likes:,}", "icon": "❤️"},
+            {"label": "Total Comments", "value": f"{total_comments:,}", "icon": "💬"},
+            {"label": "Avg Views / Video", "value": f"{avg_views:,}", "icon": "📊"},
+            {"label": "Median Engagement", "value": f"{med_eng:.2f} %", "icon": "💡"},
+        ]
+    )
 
     left, right = st.columns(2)
 
     with left:
-        st.subheader("Monthly Video + Views Trend")
+        section_header("Monthly Video + Views Trend", icon="📆")
         trend = (
             channel_df.groupby("publish_month")
             .agg(videos=("video_id", "count"), views=("views", "sum"))
             .reset_index()
             .sort_values("publish_month")
         )
-        st.line_chart(trend.set_index("publish_month")[ ["videos", "views"] ], height=320)
+        fig = plotly_line_chart(
+            trend,
+            x="publish_month",
+            y_cols=["videos", "views"],
+            title="Uploads and Views",
+            secondary_y=["views"],
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
     with right:
-        st.subheader("Top 12 Videos")
+        section_header("Top 12 Videos", icon="⭐")
         top_videos = channel_df[
-            ["video_title", "views", "likes", "comments", "engagement_rate", "video_publishedAt", "video_id"]
+            [
+                "video_title",
+                "views",
+                "likes",
+                "comments",
+                "engagement_rate",
+                "video_publishedAt",
+                "video_id",
+            ]
         ].sort_values("views", ascending=False).head(12)
-        st.dataframe(top_videos, use_container_width=True)
+        styled_dataframe(top_videos, title=None, precision=2)
 
 
 def _render_channel_audit(channel_df: pd.DataFrame) -> None:
-    st.subheader("Channel Audit")
+    section_header("Channel Audit", icon="🧪")
     audit = _compute_channel_audit(channel_df)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Consistency Score", f"{audit['consistency_score']:.1f}/100")
-    c2.metric("Avg Upload Gap", f"{audit['avg_upload_gap_days']:.1f} days")
-    c3.metric("90d View Growth", f"{audit['view_growth_90d_pct']:.1f}%")
-    c4.metric("Outlier Rate", f"{audit['outlier_rate'] * 100:.1f}%")
+    kpi_row(
+        [
+            {
+                "label": "Consistency Score",
+                "value": f"{audit['consistency_score']:.1f}/100",
+                "icon": "📆",
+            },
+            {
+                "label": "Avg Upload Gap",
+                "value": f"{audit['avg_upload_gap_days']:.1f} days",
+                "icon": "⏱️",
+            },
+            {
+                "label": "90d View Growth",
+                "value": f"{audit['view_growth_90d_pct']:.1f}%",
+                "icon": "📈",
+            },
+            {
+                "label": "Outlier Rate",
+                "value": f"{audit['outlier_rate'] * 100:.1f}%",
+                "icon": "✨",
+            },
+        ]
+    )
 
     st.markdown("**Audit Notes**")
     notes = []
@@ -634,25 +724,52 @@ def _render_channel_audit(channel_df: pd.DataFrame) -> None:
         notes.append("Performance is stable. Focus on scaling repeatable winning formats.")
 
     for item in notes:
-        st.write(f"- {item}")
+        st.markdown(
+            f"""
+            <div class="yt-card" style="padding:0.5rem 0.75rem;margin-bottom:0.35rem;">
+                <span style="font-size:12px;color:#FFFFFF;">{item}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def _render_keyword_intel(channel_df: pd.DataFrame) -> List[str]:
-    st.subheader("Keyword Intelligence")
+    section_header("Keyword Intelligence", icon="🔑")
     intel = _keyword_intel(channel_df)
     if intel.empty:
         st.info("Not enough text data to compute keyword insights.")
         return []
 
-    st.dataframe(intel, use_container_width=True)
+    styled_dataframe(intel, title=None, precision=2)
 
     top10 = intel.head(10)["keyword"].tolist()
-    st.markdown("**High-opportunity keywords:** " + ", ".join(top10))
+    st.markdown("**High-opportunity keywords:**")
+    styled_keyword_chips(top10)
+
+    # Treemap and bar chart views
+    if "score" in intel.columns:
+        tree_fig = plotly_treemap(
+            intel.head(40),
+            path=["keyword"],
+            values="score",
+            title="Keyword Opportunity Treemap",
+        )
+        st.plotly_chart(tree_fig, use_container_width=True)
+
+        bar_fig = plotly_bar_chart(
+            intel.head(20).sort_values("score", ascending=False),
+            x="keyword",
+            y="score",
+            title="Top Keyword Opportunities",
+            horizontal=True,
+        )
+        st.plotly_chart(bar_fig, use_container_width=True)
     return intel["keyword"].tolist()
 
 
 def _render_title_seo_lab(keyword_hints: List[str]) -> None:
-    st.subheader("Title & SEO Lab")
+    section_header("Title & SEO Lab", icon="🧪")
     test_title = st.text_input("Test title", value="The Hidden Physics Trick That Changes Everything")
     test_desc = st.text_area(
         "Test description",
@@ -661,24 +778,30 @@ def _render_title_seo_lab(keyword_hints: List[str]) -> None:
     )
 
     title_score, parts, tips = _title_score(test_title, keyword_hints)
-    st.metric("Title Score", f"{title_score}/100")
-    st.progress(min(max(title_score, 0), 100) / 100)
-    st.dataframe(pd.DataFrame([parts]), use_container_width=True)
-    for t in tips:
-        st.write(f"- {t}")
-
-    st.markdown("---")
-
     desc_score, desc_parts, desc_tips = _description_score(test_desc, keyword_hints)
-    st.metric("Description Score", f"{desc_score}/100")
-    st.progress(min(max(desc_score, 0), 100) / 100)
-    st.dataframe(pd.DataFrame([desc_parts]), use_container_width=True)
-    for t in desc_tips:
-        st.write(f"- {t}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        gauge = plotly_gauge_chart(title_score, "Title Score", max_val=100)
+        st.plotly_chart(gauge, use_container_width=True)
+        styled_dataframe(pd.DataFrame([parts]), title="Title Score Breakdown")
+    with c2:
+        gauge2 = plotly_gauge_chart(desc_score, "Description Score", max_val=100)
+        st.plotly_chart(gauge2, use_container_width=True)
+        styled_dataframe(pd.DataFrame([desc_parts]), title="Description Score Breakdown")
+
+    if tips:
+        st.markdown("**Title suggestions**")
+        for t in tips:
+            st.markdown(f"- {t}")
+    if desc_tips:
+        st.markdown("**Description suggestions**")
+        for t in desc_tips:
+            st.markdown(f"- {t}")
 
 
 def _render_competitor_benchmark(youtube_api_key: str) -> None:
-    st.subheader("Competitor Benchmark")
+    section_header("Competitor Benchmark", icon="📊")
     handles = st.text_area(
         "Competitor handles (comma separated)",
         value="@3blue1brown,@veritasium,@smartereveryday",
@@ -734,11 +857,34 @@ def _render_competitor_benchmark(youtube_api_key: str) -> None:
         return
 
     bdf = pd.DataFrame(rows).sort_values("total_views", ascending=False)
-    st.dataframe(bdf, use_container_width=True)
+    styled_dataframe(bdf, title=None, precision=1)
+
+    if not bdf.empty:
+        radar_series = {
+            row["channel_title"]: [
+                row["videos_1y"],
+                row["total_views"],
+                row["avg_views"],
+                row["median_engagement"],
+            ]
+            for _, row in bdf.iterrows()
+        }
+        cats = ["Videos", "Total Views", "Avg Views", "Median Engagement"]
+        radar_fig = plotly_radar_chart(cats, radar_series, "Competitor Shape")
+        st.plotly_chart(radar_fig, use_container_width=True)
+
+        bar_fig = plotly_bar_chart(
+            bdf.head(10),
+            x="channel_title",
+            y="total_views",
+            title="Total Views by Competitor",
+            horizontal=True,
+        )
+        st.plotly_chart(bar_fig, use_container_width=True)
 
 
 def _render_trend_radar(channel_df: pd.DataFrame) -> None:
-    st.subheader("Trend Radar")
+    section_header("Trend Radar", icon="📡")
     now = datetime.now(timezone.utc)
     recent_60 = channel_df[channel_df["video_publishedAt"] >= (now - timedelta(days=60))]
     prev_60 = channel_df[
@@ -773,12 +919,37 @@ def _render_trend_radar(channel_df: pd.DataFrame) -> None:
         st.info("Not enough recent data for trend radar.")
         return
 
-    tdf = tdf.sort_values(["momentum_delta", "recent_mentions"], ascending=[False, False]).head(25)
-    st.dataframe(tdf, use_container_width=True)
+    tdf = tdf.sort_values(
+        ["momentum_delta", "recent_mentions"], ascending=[False, False]
+    ).head(25)
+    styled_dataframe(tdf, title=None, precision=1)
+
+    rising = tdf[tdf["momentum_delta"] > 0].copy()
+    falling = tdf[tdf["momentum_delta"] <= 0].copy()
+
+    if not rising.empty:
+        rising_fig = plotly_bar_chart(
+            rising.sort_values("momentum_delta", ascending=True),
+            x="keyword",
+            y="momentum_delta",
+            title="🔥 Rising Keywords",
+            horizontal=True,
+        )
+        st.plotly_chart(rising_fig, use_container_width=True)
+
+    if not falling.empty:
+        falling_fig = plotly_bar_chart(
+            falling.sort_values("momentum_delta", ascending=True),
+            x="keyword",
+            y="momentum_delta",
+            title="❄️ Falling Keywords",
+            horizontal=True,
+        )
+        st.plotly_chart(falling_fig, use_container_width=True)
 
 
 def _render_content_planner(channel_df: pd.DataFrame) -> None:
-    st.subheader("Content Planner")
+    section_header("Content Planner", icon="🗓️")
 
     day_perf = (
         channel_df.groupby("publish_day", dropna=False)
@@ -797,18 +968,42 @@ def _render_content_planner(channel_df: pd.DataFrame) -> None:
     best_day = day_perf.iloc[0]["publish_day"] if not day_perf.empty else "Wednesday"
     best_hour = int(hour_perf.iloc[0]["publish_hour"]) if not hour_perf.empty else 15
 
-    c1, c2 = st.columns(2)
-    c1.metric("Best Publishing Day", str(best_day))
-    c2.metric("Best Publishing Hour (UTC)", f"{best_hour:02d}:00")
+    kpi_row(
+        [
+            {"label": "Best Publishing Day", "value": str(best_day), "icon": "📅"},
+            {
+                "label": "Best Publishing Hour (UTC)",
+                "value": f"{best_hour:02d}:00",
+                "icon": "⏰",
+            },
+        ]
+    )
 
     st.markdown("**Day Performance**")
-    st.dataframe(day_perf, use_container_width=True)
+    day_melt = day_perf.melt(
+        id_vars="publish_day",
+        value_vars=["avg_views", "median_engagement", "videos"],
+        var_name="metric",
+        value_name="value",
+    )
+    fig_day = plotly_heatmap(
+        day_melt, x="publish_day", y="metric", z="value", title="Performance by Day"
+    )
+    st.plotly_chart(fig_day, use_container_width=True)
 
     st.markdown("**Hour Performance (UTC)**")
-    st.dataframe(hour_perf.head(12), use_container_width=True)
+    fig_hour = plotly_bar_chart(
+        hour_perf.head(24),
+        x="publish_hour",
+        y="avg_views",
+        title="Views by Hour (UTC)",
+    )
+    st.plotly_chart(fig_hour, use_container_width=True)
 
     top_topics = _top_keywords(channel_df, top_n=12)
-    st.markdown("**Suggested next content angles:** " + ", ".join(top_topics[:8]))
+    if top_topics:
+        st.markdown("**Suggested next content angles**")
+        styled_keyword_chips(top_topics[:8])
 
     weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     weekday_map = {d: i for i, d in enumerate(weekday_order)}
@@ -831,7 +1026,24 @@ def _render_content_planner(channel_df: pd.DataFrame) -> None:
         cursor += timedelta(days=7)
 
     st.markdown("**4-Week Suggested Calendar**")
-    st.dataframe(pd.DataFrame(plan_rows), use_container_width=True)
+    calendar_df = pd.DataFrame(plan_rows)
+    cols = st.columns(4)
+    for idx, row in calendar_df.iterrows():
+        col = cols[idx % 4]
+        with col:
+            st.markdown(
+                f"""
+                <div class="yt-card" style="padding:0.6rem 0.75rem;margin-bottom:0.6rem;">
+                    <div style="font-size:11px;color:#B0B0B0;">{row['week']}</div>
+                    <div style="font-size:16px;font-weight:600;color:#FFFFFF;">{row['publish_date_utc']}</div>
+                    <div style="font-size:12px;color:#B0B0B0;margin-bottom:0.15rem;">{row['publish_time_utc']} UTC</div>
+                    <div style="font-size:12px;color:#FFFFFF;">
+                        <span class="keyword-chip">{row['topic_hint']}</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 
 def _render_ai_studio(
@@ -840,11 +1052,26 @@ def _render_ai_studio(
     channel_id: str,
     keyword_hints: List[str],
 ) -> None:
-    st.subheader("AI Studio")
+    section_header("AI Studio", icon="🤖")
+    st.markdown('<div class="yt-card">', unsafe_allow_html=True)
 
-    gemini_key = st.text_input("Gemini API Key", value=os.getenv("GEMINI_API_KEY", ""), type="password")
-    text_model = st.text_input("Gemini text model", value="gemini-2.0-flash")
-    image_model = st.text_input("Gemini image model", value="gemini-2.0-flash-preview-image-generation")
+    gemini_key = st.text_input(
+        "Gemini API Key", value=os.getenv("GEMINI_API_KEY", ""), type="password"
+    )
+    openai_key = st.text_input(
+        "OpenAI API Key", value=os.getenv("OPENAI_API_KEY", ""), type="password"
+    )
+
+    text_provider = st.selectbox("Text provider", ["gemini", "openai"], index=0)
+    image_provider = st.selectbox("Image provider", ["gemini", "openai"], index=0)
+
+    default_text_model = "gemini-2.0-flash" if text_provider == "gemini" else "gpt-4.1-mini"
+    text_model = st.text_input("Text model", value=default_text_model)
+
+    default_image_model = (
+        "gemini-2.0-flash-exp-image-generation" if image_provider == "gemini" else "gpt-image-1"
+    )
+    image_model = st.text_input("Image model", value=default_image_model)
 
     creative_brief = st.text_area(
         "Creative brief",
@@ -874,10 +1101,7 @@ def _render_ai_studio(
     med_eng = float(channel_df["engagement_rate"].median() * 100)
 
     if gen_text:
-        if not gemini_key.strip():
-            st.error("Gemini API key is required for AI content.")
-        else:
-            prompt = (
+        prompt = (
                 "You are an advanced YouTube strategist. "
                 "Produce concise, high-performing outputs grounded in these channel stats.\n\n"
                 f"Channel: {channel_title} ({channel_id})\n"
@@ -891,48 +1115,100 @@ def _render_ai_studio(
                 "- search intent alignment\n"
                 "- simple CTA\n"
             )
-            with st.spinner("Calling Gemini..."):
-                try:
-                    output = _gemini_generate_text(gemini_key.strip(), text_model.strip(), prompt)
-                    st.text_area("AI Output", value=output, height=460)
-                except Exception as exc:
-                    st.error(f"Gemini generation failed: {exc}")
+        with st.spinner("Generating AI content..."):
+            try:
+                model_name = text_model.strip()
+                if text_provider == "gemini":
+                    if not gemini_key.strip():
+                        st.error("Gemini API key is required for Gemini content.")
+                        raise RuntimeError("Missing Gemini key")
+                    output = _gemini_generate_text(gemini_key.strip(), model_name, prompt)
+                else:
+                    if not openai_key.strip():
+                        st.error("OpenAI API key is required for GPT content.")
+                        raise RuntimeError("Missing OpenAI key")
+                    output = _openai_generate_text(openai_key.strip(), model_name, prompt)
+
+                st.markdown(
+                    f"""
+                    <div class="yt-card" style="margin-top:0.8rem;">
+                        <div style="font-size:13px;color:#B0B0B0;margin-bottom:0.35rem;">AI Output</div>
+                        <pre style="white-space:pre-wrap;font-size:13px;color:#FFFFFF;background:rgba(5,5,15,0.95);padding:0.75rem;border-radius:10px;border:1px solid rgba(255,255,255,0.12);max-height:520px;overflow:auto;">{output}</pre>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            except RuntimeError:
+                # Error already surfaced to user.
+                pass
+            except Exception as exc:
+                st.error(f"AI generation failed: {exc}")
 
     if gen_thumb:
-        if not gemini_key.strip():
-            st.error("Gemini API key is required for thumbnail generation.")
+        base_title = (
+            channel_df.sort_values("views", ascending=False)
+            .head(1)["video_title"]
+            .iloc[0]
+        )
+        provider_key = None
+        provider_name = image_provider.lower().strip()
+        if provider_name == "gemini":
+            provider_key = gemini_key.strip()
+            if not provider_key:
+                st.error("Gemini API key is required for Gemini thumbnails.")
+        elif provider_name == "openai":
+            provider_key = openai_key.strip()
+            if not provider_key:
+                st.error("OpenAI API key is required for GPT thumbnails.")
         else:
-            base_title = channel_df.sort_values("views", ascending=False).head(1)["video_title"].iloc[0]
-            with st.spinner("Generating thumbnails..."):
-                try:
-                    generator = ThumbnailGenerator(provider="gemini", api_key=gemini_key.strip(), model=image_model.strip())
-                    images = generator.generate(
-                        title=f"Inspired by: {base_title}",
-                        context=creative_brief,
-                        style="High contrast, one clear subject, bold science aesthetic, 16:9 composition",
-                        negative_prompt="clutter, tiny text, low contrast",
-                        count=3,
-                    )
-                    out_dir = os.path.join("outputs", "thumbnails")
-                    os.makedirs(out_dir, exist_ok=True)
-                    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            st.error(f"Unsupported image provider: {image_provider}")
 
-                    for idx, generated in enumerate(images, start=1):
-                        st.image(generated.image_bytes, caption=f"Ytuber Thumbnail {idx}")
-                        ext = "png" if "png" in generated.mime_type else "jpg"
-                        filename = f"ytuber_{channel_id}_{ts}_{idx}.{ext}"
-                        with open(os.path.join(out_dir, filename), "wb") as fp:
-                            fp.write(generated.image_bytes)
+        if not provider_key:
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+
+        with st.spinner("Generating thumbnails..."):
+            try:
+                generator = ThumbnailGenerator(
+                    provider=provider_name,
+                    api_key=provider_key,
+                    model=image_model.strip(),
+                )
+                images = generator.generate(
+                    title=f"Inspired by: {base_title}",
+                    context=creative_brief,
+                    style=(
+                        "High contrast, one clear subject, bold science aesthetic, 16:9 composition"
+                    ),
+                    negative_prompt="clutter, tiny text, low contrast",
+                    count=3,
+                )
+                out_dir = os.path.join("outputs", "thumbnails")
+                os.makedirs(out_dir, exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+                st.markdown('<div class="thumb-grid">', unsafe_allow_html=True)
+                for idx, generated in enumerate(images, start=1):
+                    ext = "png" if "png" in generated.mime_type else "jpg"
+                    filename = f"ytuber_{channel_id}_{ts}_{idx}.{ext}"
+                    with open(os.path.join(out_dir, filename), "wb") as fp:
+                        fp.write(generated.image_bytes)
+                    with st.container():
+                        st.markdown('<div class="thumb-card">', unsafe_allow_html=True)
+                        st.image(generated.image_bytes, use_container_width=True)
                         st.download_button(
-                            label=f"Download thumbnail {idx}",
+                            label="Download",
                             data=generated.image_bytes,
                             file_name=filename,
                             mime=generated.mime_type,
-                            key=f"ytuber_thumb_{idx}_{ts}",
                             use_container_width=True,
+                            key=f"ytuber_thumb_{idx}_{ts}",
                         )
-                except Exception as exc:
-                    st.error(f"Thumbnail generation failed: {exc}")
+                        st.markdown("</div>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+            except Exception as exc:
+                st.error(f"Thumbnail generation failed: {exc}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render() -> None:
